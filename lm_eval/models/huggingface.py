@@ -1,9 +1,11 @@
+import sys
 import math
 import torch
 import torch.nn.functional as F
 import transformers
 import peft
 from peft import __version__ as PEFT_VERSION
+from deltatuner import deltatuner, denas_config
 from pathlib import Path
 from typing import List, Mapping, NewType, Optional, Tuple, Union
 from tqdm import tqdm
@@ -62,6 +64,7 @@ class HuggingFaceAutoLM(BaseLM):
     AUTO_TOKENIZER_CLASS: transformers.AutoTokenizer = transformers.AutoTokenizer
     AUTO_MODEL_CLASS: transformers.AutoModel = None
     AUTO_PEFT_CLASS: peft.PeftModel = None
+    AUTO_DELTA_CLASS: deltatuner.DeltaTunerModel = None
 
     # Default max sequence length setting for when no `max_length` is provided
     # or no max length config setting is found in the model or tokenizer.
@@ -87,6 +90,7 @@ class HuggingFaceAutoLM(BaseLM):
         dtype: Optional[Union[str, torch.dtype]] = None,
         device: Optional[Union[int, str]] = "cuda",
         peft: str = None,
+        delta: str = None,
         load_in_8bit: Optional[bool] = False,
         load_in_4bit: Optional[bool] = False,
         trust_remote_code: Optional[bool] = False,
@@ -237,6 +241,15 @@ class HuggingFaceAutoLM(BaseLM):
                 subfolder=subfolder,
                 load_in_4bit=load_in_4bit,
             )
+            if delta is not None:
+                self.model = self._create_auto_model_delta(
+                    model=self.model,
+                    peft=peft,
+                    revision=revision,
+                    subfolder=subfolder,
+                    load_in_4bit=load_in_4bit,
+                    best_model_structure=delta,
+                )
         self.model.eval()
         torch.set_grad_enabled(False)
 
@@ -320,6 +333,27 @@ class HuggingFaceAutoLM(BaseLM):
             model,
             peft,
             revision=revision + ("/" + subfolder if subfolder is not None else ""),
+        )
+        return model
+
+    def _create_auto_model_delta(
+        self,
+        *,
+        model: transformers.PreTrainedModel,
+        peft: str,
+        revision: str,
+        subfolder: str,
+        load_in_4bit: Optional[bool] = False,
+        best_model_structure: str,
+    ):
+        if load_in_4bit:
+            assert PEFT_VERSION >= "0.4.0", "load_in_4bit requires peft >= 0.4.0"
+        denas_conf = denas_config.DeNASConfig(best_model_structure=best_model_structure)
+        model = self.AUTO_DELTA_CLASS.from_pretrained(
+            model,
+            peft,
+            revision=revision + ("/" + subfolder if subfolder is not None else ""),
+            denas_config=denas_conf,
         )
         return model
 
@@ -490,6 +524,7 @@ class AutoCausalLM(HuggingFaceAutoLM):
 
     AUTO_MODEL_CLASS = transformers.AutoModelForCausalLM
     AUTO_PEFT_CLASS = peft.PeftModel
+    AUTO_DELTA_CLASS = deltatuner.DeltaTunerModel
 
     def _create_auto_tokenizer(
         self,
